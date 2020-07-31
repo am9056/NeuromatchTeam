@@ -1,43 +1,43 @@
 #%%
 import numpy as np
 import matplotlib.pyplot as plt
-import os, requests
+# import os, requests
+# from scipy.optimize import minimize
 
-#%% Download Data
+#%% Functions
 
-fname = []
-for j in range(3):
-  fname.append('steinmetz_part%d.npz'%j)
-url = ["https://osf.io/agvxh/download"]
-url.append("https://osf.io/uv3mw/download")
-url.append("https://osf.io/ehmw2/download")
 
-for j in range(len(url)):
-  if not os.path.isfile(fname[j]):
-    try:
-      r = requests.get(url[j])
-    except requests.ConnectionError:
-      print("!!! Failed to download data !!!")
-    else:
-      if r.status_code != requests.codes.ok:
-        print("!!! Failed to download data !!!")
-      else:
-        with open(fname[j], "wb") as fid:
-          fid.write(r.content)
+def load_data():
+    fname = []
+    for j in range(3):
+      fname.append('steinmetz_part%d.npz'%j)
+    url = ["https://osf.io/agvxh/download"]
+    url.append("https://osf.io/uv3mw/download")
+    url.append("https://osf.io/ehmw2/download")
 
-alldat = np.array([])
-for j in range(len(fname)):
-  alldat = np.hstack((alldat, np.load('steinmetz_part%d.npz'%j, allow_pickle=True)['dat']))
+    for j in range(len(url)):
+      if not os.path.isfile(fname[j]):
+        try:
+          r = requests.get(url[j])
+        except requests.ConnectionError:
+          print("!!! Failed to download data !!!")
+        else:
+          if r.status_code != requests.codes.ok:
+            print("!!! Failed to download data !!!")
+          else:
+            with open(fname[j], "wb") as fid:
+              fid.write(r.content)
 
-# select just one of the recordings here. 11 is nice because it has some neurons in vis ctx.
-dat = alldat[11]
-print(dat.keys())
+    alldat = np.array([])
+    for j in range(len(fname)):
+      alldat = np.hstack((alldat, np.load('steinmetz_part%d.npz'%j,
+                                          allow_pickle=True)['dat']))
 
-#%%
+    return alldat
 
 
 # Rascola-Wagner Model of Value
-def value(r, alpha):
+def gen_value(alpha, r):
     v = np.full(r.shape, np.nan)
     v[0] = 0
 
@@ -46,71 +46,190 @@ def value(r, alpha):
 
     return v
 
-# R = np.ones((1, 1000))[0]
-R = dat['feedback_type']
 
-V = value(R, 0.1)
-plt.plot(R, 'r--')
-plt.plot(V)
+def nll(alpha, beta, choice_, dat):
+    go_trials = np.logical_or(dat["contrast_left"] != 0,
+                              dat["contrast_right"] != 0)
 
-plt.show()
+    total_contrasts_ = dat["contrast_left"] - dat["contrast_right"]
+    total_contrasts = total_contrasts_[go_trials]
 
-#%%
-total_contrasts = dat["contrast_left"] - dat["contrast_right"]
-gotrials = np.logical_and(dat["contrast_left"]!=0, dat["contrast_right"]!=0)
-go_contrasts = total_contrasts[gotrials]
+    choice = choice_[go_trials]
+    choice[choice == -1] = 0
 
-ntrials = len(go_contrasts)
+    y_hat = np.exp(beta*total_contrasts) / \
+            (np.exp(-beta*total_contrasts) + np.exp(beta*total_contrasts)) +\
+            np.finfo(float).eps # avoids zero y_hats
 
-beta = 30.
+    lik = y_hat**choice*(1-y_hat)**(1-choice)
+    return -np.sum(np.log(lik))
 
-prob_left = np.exp(beta*go_contrasts)/\
-            (np.exp(-beta*go_contrasts)[0] + np.exp(beta*go_contrasts))
 
-response = dat["response"][gotrials]
-response[response == -1] = 0
-plt.plot(response)
-plt.plot(prob_left)
-plt.show()
+def softmax_data_gen(params, dat):
+    (alpha, beta) = params
 
-#%%
+    v = gen_value(alpha, dat['feedback_type'])
 
-print(dat['feedback_type'].shape)
-plt.plot(dat['feedback_type'])
+    idx = np.logical_or(contrast_left != 0, contrast_right != 0)
+    total_contrast = contrast_left[idx] - contrast_right[idx]
 
-mean_smoothed_response = my_moving_window(dat['feedback_type'], window = 20)
-plt.plot(mean_smoothed_response)
+    fcv = total_contrast * v[idx]
+    pcl = np.exp(beta * fcv) / (np.exp(-beta * fcv) + np.exp(beta * fcv))
 
-x_points, gamma = np.arange(0,20,1), .1
+    myrand = np.random.rand(1, len(pcl))[0]
+    fake_choice = np.zeros_like(pcl)
 
-exp_function = gamma* np.exp(-gamma * x_points)
+    for i in range(len(pcl)):
+        if myrand[i] < pcl[i]:
+            fake_choice[i] = 1  # Choose right
+        else:
+            fake_choice[i] = -1  # Choose left
 
-value = np.convolve(exp_function,dat['feedback_type'],mode = 'same')
-plt.plot(value)
-# plt.figure
-# plt.plot(exp_function)
+    return fake_choice
+
 
 #%%
 
-idx = np.logical_and(dat['contrast_left'] != 0 , dat['contrast_right'] != 0)
-# print(idx)
-total_contrast = dat['contrast_left'][idx] - dat['contrast_right'][idx]
-total_response = dat['response'][idx]
+total_response = response[idx]
 noisy_response = total_response + 0.2 * np.random.rand(len(total_response))
-plt.scatter(total_contrast,noisy_response)
 
 contrasts = np.unique(total_contrast)
 mean_response = np.zeros_like(contrasts)
-for i,c in enumerate(contrasts):
-  idx2 = total_contrast == c
-  mean_response[i] = np.mean(total_response[idx2])
+for i, c in enumerate(contrasts):
+    idx2 = total_contrast == c
+    mean_response[i] = np.mean(total_response[idx2])
 
+plt.figure()
+plt.scatter(total_contrast, noisy_response)
 plt.plot(contrasts, mean_response)
+plt.xlabel('Contrast')
+plt.ylabel('Original Choices')
+plt.title('Original Data')
+
+mean_fake_response = np.zeros_like(contrasts)
+for i, c in enumerate(contrasts):
+    idx2 = total_contrast == c
+    mean_fake_response[i] = np.mean(fake_choice[idx2])
+
+plt.figure()
+plt.scatter(total_contrast,
+            fake_choice + 0.2 * np.random.rand(len(fake_choice)))
+plt.plot(contrasts, mean_fake_response)
+plt.xlabel('Contrast')
+plt.ylabel('Generated Choices')
+plt.title('Generated Data')
+
+plt.figure()
+plt.scatter(total_contrast, PCL)
+plt.xlabel('Contrast')
+plt.ylabel('P(C = L)')
+plt.title('Softmax Function')
+
+# Today's needs:
+# 1. Recover generative parameters
+#   a. make some good figures
+# 2. Cross validation?
+# 3. Fit mice
+
+#%% Let's just jump in
+
+# Generate Synthetic Data
+synth_data = softmax_data_gen((3, 0.3), dat)
+
+nll(alpha, beta, choice_, dat)
 
 #%%
 
-# Softmax Function
-fcv = total_contrast * value[idx]
-beta = 3
-PCL = np.exp(beta*fcv)/ (np.exp(-beta*fcv) + np.exp(beta*fcv))
-plt.scatter(total_contrast,PCL)
+
+def my_exp(beta, X):
+    return np.exp(np.dot(X, beta.T)[0])
+
+
+def multi_nom_probs(betas, dat):
+    # Make design matrix - contrast left, contrast right, diff in contrast
+    X = np.array([dat["contrast_left"],
+                  dat["contrast_right"],
+                  (dat["contrast_left"] - dat["contrast_right"]) * \
+                  (dat["contrast_left"] + dat["contrast_right"])])
+    X = X.T
+
+    # reshape betas
+    betas = betas.reshape(3, 3)
+    beta1 = betas[:, 0]
+    beta2 = betas[:, 1]
+    beta3 = betas[:, 2]
+
+    # Preallocate probablities
+    probs = np.zeros_like(X)
+
+    # softmax function for each choice (left, right, nogo)
+    for n in np.arange(len(X)):
+        p_l = my_exp(X[n, np.newaxis], beta1) / \
+              np.sum([my_exp(X[n, np.newaxis], beta1),
+                      my_exp(X[n, np.newaxis], beta2),
+                      my_exp(X[n, np.newaxis], beta3)])
+
+        p_r = my_exp(X[n, np.newaxis], beta2) / \
+              np.sum([my_exp(X[n, np.newaxis], beta1),
+                      my_exp(X[n, np.newaxis], beta2),
+                      my_exp(X[n, np.newaxis], beta3)])
+
+        p_ng = my_exp(X[n, np.newaxis], beta3) / \
+               np.sum([my_exp(X[n, np.newaxis], beta1),
+                       my_exp(X[n, np.newaxis], beta2),
+                       my_exp(X[n, np.newaxis], beta3)])
+
+        probs[n, :] = [p_l, p_r, p_ng]
+
+    return probs
+
+
+def nll_multinom(betas, ys, dat):
+    probs = multi_nom_probs(betas, dat) # Get probablities from above
+
+    # One hot encoding of choice (l, r, nogo)
+    Y = np.zeros((len(ys), 3))
+    Y[ys == 1, 0] = 1
+    Y[ys == -1, 1] = 1
+    Y[ys == 0, 2] = 1
+
+    # Calculate log likelihood using (ignoring multinomial coeff)?
+    lik = np.prod(probs**Y, axis=1)
+    return -np.sum(np.log(lik))
+
+
+def gen_synth_data(betas, dat):
+    probs = multi_nom_probs(betas, dat)
+
+    choices = np.zeros_like(dat["response"])
+
+    for n in np.arange(len(dat["response"])):
+
+        r = np.random.rand()
+        p = np.cumsum(probs[n, :])
+
+        if r < p[0]:
+            choices[n] = 1
+        elif p[0] < r < p[1]:
+            choices[n] = -1
+        else:
+            choices[n] = 0
+
+    return choices
+
+
+#%%
+# betas = np.random.rand(9)*100 - 50
+# synth_data = gen_synth_data(betas, dat)
+# data_to_fit = synth_data
+
+data_to_fit = dat["response"]
+
+test = minimize(lambda x: nll_multinom(x, data_to_fit, dat),
+                x0=np.random.rand(9))
+
+plt.plot(gen_synth_data(test.x, dat), 'r.')
+plt.plot(data_to_fit, 'k.')
+
+plt.title(str(np.mean(gen_synth_data(test.x, dat) == data_to_fit)))
+plt.show()
